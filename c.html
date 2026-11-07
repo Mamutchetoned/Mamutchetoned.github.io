@@ -1,0 +1,173 @@
+<!doctype html>
+<html lang="bg">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex, nofollow">
+<meta name="referrer" content="no-referrer">
+<title>Потвърждение на час</title>
+<!--
+  The page behind {confirm_link} in the patient SMS (migration 0016).
+  Opening it only shows the appointment; the patient's answer is sent when a
+  button is pressed, so link previews can't answer for them.
+  web/build.mjs fills in the Supabase URL and the public key and writes the
+  result to web/dist/c.html, which is published as https://mamutchetoned.github.io/c
+-->
+<style>
+  :root {
+    --bg: #f1f5f9; --card: #ffffff; --text: #1e293b; --muted: #64748b;
+    --blue: #2563eb; --green: #16a34a; --red: #dc2626; --amber: #d97706; --line: #e2e8f0;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg: #0f172a; --card: #1e293b; --text: #f1f5f9; --muted: #94a3b8; --line: #334155; }
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; min-height: 100vh; background: var(--bg); color: var(--text);
+    font: 17px/1.45 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+    display: flex; align-items: flex-start; justify-content: center; padding: 32px 16px;
+  }
+  main { width: 100%; max-width: 420px; background: var(--card); border-radius: 18px; padding: 24px; box-shadow: 0 1px 4px #0000000f; }
+  h1 { font-size: 20px; margin: 0 0 4px; }
+  .clinic { color: var(--muted); margin: 0 0 20px; font-size: 15px; }
+  .when { font-size: 26px; font-weight: 700; margin: 0; }
+  .day { color: var(--muted); margin: 2px 0 24px; text-transform: capitalize; }
+  button {
+    display: block; width: 100%; border: 0; border-radius: 12px; padding: 16px;
+    font: inherit; font-weight: 600; cursor: pointer; margin-top: 12px;
+  }
+  button:disabled { opacity: .6; cursor: default; }
+  .yes { background: var(--green); color: #fff; }
+  .no { background: transparent; color: var(--red); border: 1.5px solid var(--line); }
+  .msg { border-radius: 12px; padding: 14px 16px; margin-top: 8px; font-weight: 600; }
+  .ok { background: #16a34a1f; color: var(--green); }
+  .bad { background: #dc26261f; color: var(--red); }
+  .info { background: #64748b1f; color: var(--muted); }
+  a { color: var(--blue); }
+  .hidden { display: none; }
+</style>
+</head>
+<body>
+<main>
+  <div id="loading">Зареждане…</div>
+
+  <div id="appt" class="hidden">
+    <h1>Вашият час</h1>
+    <p class="clinic" id="clinic"></p>
+    <p class="when" id="when"></p>
+    <p class="day" id="day"></p>
+    <div id="result"></div>
+    <div id="actions">
+      <button class="yes" id="btn-yes" type="button">Потвърждавам</button>
+      <button class="no" id="btn-no" type="button">Не мога да дойда</button>
+    </div>
+    <p id="call" class="clinic hidden" style="margin:20px 0 0"></p>
+  </div>
+
+  <div id="missing" class="hidden">
+    <h1>Линкът не е валиден</h1>
+    <p class="clinic">Възможно е часът Ви да е бил преместен — тогава сте получили нов SMS с нов линк. При въпроси се обадете в кабинета.</p>
+  </div>
+
+  <div id="failed" class="hidden">
+    <h1>Нещо се обърка</h1>
+    <p class="clinic">Не успяхме да се свържем. Проверете интернета и опитайте пак.</p>
+    <button class="yes" type="button" onclick="location.reload()">Опитай пак</button>
+  </div>
+</main>
+
+<script>
+(function () {
+  var SUPABASE_URL = 'https://itjblivftuvvsxchlgwc.supabase.co';
+  var SUPABASE_KEY = 'sb_publishable_QicwDc0dJfnIOIYyg9CZUA_HDEJDRNv';
+  var TZ = 'Europe/Sofia';
+
+  var raw = (location.hash || '').replace(/^#/, '') || new URLSearchParams(location.search).get('t') || '';
+  // Phones sometimes take a trailing dot or bracket into the link.
+  var token = (raw.match(/[A-Za-z0-9]{10}/) || [''])[0];
+
+  var $ = function (id) { return document.getElementById(id); };
+  var show = function (id) {
+    ['loading', 'appt', 'missing', 'failed'].forEach(function (x) { $(x).classList.toggle('hidden', x !== id); });
+  };
+
+  function rpc(name, body) {
+    return fetch(SUPABASE_URL + '/rest/v1/rpc/' + name, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', apikey: SUPABASE_KEY },
+      body: JSON.stringify(body),
+    }).then(function (r) {
+      if (!r.ok) throw new Error('HTTP ' + r.status);
+      return r.json();
+    });
+  }
+
+  function render(rows) {
+    var a = rows && rows[0];
+    if (!a) { show('missing'); return; }
+    var d = new Date(a.appointment_date);
+    $('clinic').textContent = a.clinic_name || '';
+    $('when').textContent =
+      d.toLocaleDateString('bg-BG', { timeZone: TZ, day: 'numeric', month: 'long' }) + ', ' +
+      d.toLocaleTimeString('bg-BG', { timeZone: TZ, hour: '2-digit', minute: '2-digit' }) + ' ч.';
+    $('day').textContent = d.toLocaleDateString('bg-BG', { timeZone: TZ, weekday: 'long' });
+
+    var msg = {
+      confirmed: ['ok', 'Часът е потвърден. Благодарим Ви!'],
+      declined: ['bad', 'Отбелязахме, че не можете да дойдете. Ще се свържем с Вас за нов час.'],
+      cancelled: ['info', 'Този час вече не е активен.'],
+      past: ['info', 'Този час вече е минал.'],
+    }[a.state];
+    $('result').innerHTML = '';
+    if (msg) {
+      var p = document.createElement('div');
+      p.className = 'msg ' + msg[0];
+      p.textContent = msg[1];
+      $('result').appendChild(p);
+    }
+    // Answers can still be changed until the appointment.
+    var open = a.state === 'open' || a.state === 'confirmed' || a.state === 'declined';
+    $('actions').classList.toggle('hidden', !open);
+    $('btn-yes').classList.toggle('hidden', a.state === 'confirmed');
+    $('btn-no').classList.toggle('hidden', a.state === 'declined');
+    $('btn-no').textContent = 'Не мога да дойда';
+    $('btn-no').dataset.sure = '';
+
+    var phone = (a.clinic_phone || '').trim();
+    $('call').classList.toggle('hidden', !phone);
+    if (phone) {
+      $('call').innerHTML = '';
+      $('call').append('Тел. на кабинета: ');
+      var link = document.createElement('a');
+      link.href = 'tel:' + phone.replace(/\s+/g, '');
+      link.textContent = phone;
+      $('call').appendChild(link);
+    }
+    show('appt');
+  }
+
+  function answer(kind) {
+    $('btn-yes').disabled = $('btn-no').disabled = true;
+    rpc('answer_appointment_by_token', { p_token: token, p_answer: kind })
+      .then(render, function () { show('failed'); })
+      .then(function () { $('btn-yes').disabled = $('btn-no').disabled = false; });
+  }
+
+  $('btn-yes').addEventListener('click', function () { answer('confirm'); });
+  // Two taps for "can't come", so a slip of the finger doesn't cancel.
+  $('btn-no').addEventListener('click', function () {
+    var b = $('btn-no');
+    if (!b.dataset.sure) {
+      b.dataset.sure = '1';
+      b.textContent = 'Натиснете пак, за да потвърдите, че не можете да дойдете';
+      return;
+    }
+    answer('decline');
+  });
+
+  if (!token) { show('missing'); return; }
+  rpc('appointment_by_token', { p_token: token }).then(render, function () { show('failed'); });
+})();
+</script>
+</body>
+</html>
